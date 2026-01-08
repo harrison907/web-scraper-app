@@ -1,86 +1,127 @@
 from flask import Flask, jsonify, render_template_string
 import requests
 from bs4 import BeautifulSoup
+import os
+import random
 
 app = Flask(__name__)
 
-# --- 3.0 版本 UI：增加海报墙和详情跳转 ---
+# --- V6.0：精致榜单版（无图、高级感序号） ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
-    <!-- 关键：解决豆瓣图片不显示的问题 -->
-    <meta name="referrer" content="no-referrer">
     <meta name="apple-mobile-web-app-capable" content="yes">
-    <title>豆瓣高分电影</title>
+    <title>热映榜单</title>
     <style>
-        body { font-family: -apple-system, sans-serif; background-color: #f2f2f7; margin: 0; padding-bottom: 80px; }
-        .header { padding: 40px 20px 20px; background: #fff; border-bottom: 1px solid #d1d1d6; }
-        h1 { margin: 0; font-size: 28px; font-weight: 800; color: #1c1c1e; }
-        p { color: #8e8e93; margin: 5px 0 0; }
+        :root {
+            --ios-bg: #f2f2f7;
+            --ios-blue: #007aff;
+            --gold: linear-gradient(135deg, #ffd700, #ffae00);
+            --silver: linear-gradient(135deg, #c0c0c0, #939393);
+            --bronze: linear-gradient(135deg, #cd7f32, #a0522d);
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; 
+            background-color: var(--ios-bg); 
+            margin: 0; padding-bottom: 100px;
+        }
+        .header { 
+            padding: 50px 20px 20px; 
+            background: rgba(255,255,255,0.85); 
+            backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border-bottom: 0.5px solid #d1d1d6; 
+            position: sticky; top: 0; z-index: 100;
+        }
+        h1 { margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
         .movie-list { padding: 15px; }
         .movie-card { 
-            display: flex; background: white; border-radius: 12px; margin-bottom: 15px; 
-            overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            display: flex; align-items: center;
+            background: white; border-radius: 16px; 
+            margin-bottom: 12px; padding: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.04); 
             text-decoration: none; color: inherit;
         }
-        .movie-card:active { background: #e5e5ea; }
-        .movie-poster { width: 100px; height: 140px; object-fit: cover; }
-        .movie-info { padding: 12px; flex: 1; display: flex; flex-direction: column; justify-content: space-between; }
-        .movie-title { font-size: 17px; font-weight: bold; color: #000; margin-bottom: 5px; }
-        .movie-meta { font-size: 13px; color: #8e8e93; line-height: 1.4; }
-        .rating-box { display: flex; align-items: center; margin-top: 5px; }
-        .star { color: #ff9500; font-size: 14px; margin-right: 4px; }
-        .score { font-weight: bold; color: #ff9500; font-size: 15px; }
-        .quote { font-style: italic; font-size: 12px; color: #48484a; margin-top: 8px; border-left: 2px solid #34c759; padding-left: 8px; }
-        .refresh-btn { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
-                       background: #34c759; color: white; padding: 12px 40px; 
-                       border-radius: 25px; font-weight: 600; border: none; font-size: 16px;
-                       box-shadow: 0 4px 15px rgba(52,199,89,0.4); z-index: 1000; }
-        #loading { text-align: center; padding: 50px; color: #8e8e93; }
+        .movie-card:active { background: #e5e5ea; transform: scale(0.98); transition: 0.1s; }
+        
+        /* 精致序号设计 */
+        .rank-badge {
+            width: 40px; height: 40px;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 18px; font-weight: 800;
+            color: white; margin-right: 15px;
+            flex-shrink: 0;
+            background: #d1d1d6; /* 默认灰色 */
+        }
+        .rank-1 { background: var(--gold); box-shadow: 0 4px 10px rgba(255,174,0,0.3); }
+        .rank-2 { background: var(--silver); }
+        .rank-3 { background: var(--bronze); }
+        
+        .info-content { flex: 1; min-width: 0; }
+        .movie-title { 
+            font-size: 18px; font-weight: 700; color: #1c1c1e; 
+            margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; 
+        }
+        .score-box { display: flex; align-items: center; margin-bottom: 4px; }
+        .score-num { font-weight: 800; color: #ff9500; font-size: 15px; margin-right: 6px; }
+        .meta { font-size: 12px; color: #8e8e93; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        .refresh-btn { 
+            position: fixed; bottom: 35px; left: 50%; transform: translateX(-50%); 
+            background: var(--ios-blue); color: white; 
+            padding: 14px 45px; border-radius: 30px; 
+            font-weight: 600; border: none; font-size: 17px;
+            box-shadow: 0 8px 20px rgba(0,122,255,0.3); z-index: 1000; 
+        }
+        #loading { text-align: center; padding: 100px 20px; color: #8e8e93; }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>豆瓣电影 Top250</h1>
-        <p>自用高分电影监控助手</p>
-    </div>
-    
-    <div id="loading">正在连接豆瓣服务器...</div>
-    <div class="movie-list" id="content"></div>
-
-    <button class="refresh-btn" onclick="fetchData()">刷新榜单</button>
+    <div class="header"><h1>正在热映 · 榜单</h1></div>
+    <div id="loading">正在获取实时数据...</div>
+    <div id="content" class="movie-list"></div>
+    <button class="refresh-btn" onclick="fetchData()">刷新数据</button>
 
     <script>
         async function fetchData() {
-            document.getElementById('loading').style.display = 'block';
+            const content = document.getElementById('content');
+            const loading = document.getElementById('loading');
+            loading.style.display = 'block';
             try {
                 const res = await fetch('/api/scrape');
                 const result = await res.json();
                 if(result.success) {
-                    const html = result.data.map(m => `
+                    content.innerHTML = result.data.map((m, index) => {
+                        const rank = index + 1;
+                        let rankClass = "";
+                        if(rank === 1) rankClass = "rank-1";
+                        else if(rank === 2) rankClass = "rank-2";
+                        else if(rank === 3) rankClass = "rank-3";
+
+                        return `
                         <a href="${m.link}" class="movie-card" target="_blank">
-                            <img src="${m.img}" class="movie-poster" alt="海报">
-                            <div class="movie-info">
-                                <div>
-                                    <div class="movie-title">${m.title}</div>
-                                    <div class="movie-meta">${m.info}</div>
-                                    <div class="rating-box">
-                                        <span class="star">★</span>
-                                        <span class="score">${m.score}</span>
-                                        <span style="font-size:12px; color:#8e8e93; margin-left:8px;">(${m.votes}人评价)</span>
-                                    </div>
+                            <div class="rank-badge ${rankClass}">${rank}</div>
+                            <div class="info-content">
+                                <div class="movie-title">${m.title}</div>
+                                <div class="score-box">
+                                    <span class="score-num">${m.score === '0' ? '暂无评分' : '★ ' + m.score}</span>
                                 </div>
-                                ${m.quote ? `<div class="quote">“${m.quote}”</div>` : ''}
+                                <div class="meta">${m.region} · ${m.duration}</div>
+                                <div class="meta">${m.actors}</div>
                             </div>
                         </a>
-                    `).join('');
-                    document.getElementById('content').innerHTML = html;
+                        `;
+                    }).join('');
+                } else {
+                    content.innerHTML = `<div style="padding:40px; text-align:center; color:#8e8e93;">无法获取数据<br>${result.error}</div>`;
                 }
-            } catch (e) { alert('抓取失败，请检查网络或稍后再试'); }
-            document.getElementById('loading').style.display = 'none';
+            } catch (e) {
+                content.innerHTML = '<div style="padding:40px; text-align:center; color:#8e8e93;">网络超时</div>';
+            }
+            loading.style.display = 'none';
         }
         window.onload = fetchData;
     </script>
@@ -88,46 +129,45 @@ HTML_TEMPLATE = """
 </html>
 """
 
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+    'Referer': 'https://movie.douban.com/'
+}
+
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
 
 @app.route('/api/scrape')
 def scrape():
-    # 爬取豆瓣电影 Top 250 第一页
-    url = "https://movie.douban.com/top250"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1'
-    }
+    # 使用北京站作为默认热映数据源
+    url = "https://movie.douban.com/cinema/nowplaying/beijing/"
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(res.text, 'html.parser')
-        
         movie_data = []
-        items = soup.select('ol.grid_view li')
+        items = soup.select('div#nowplaying li.list-item')
         
         for item in items:
-            title = item.select_one('.title').text
-            img = item.select_one('.pic img')['src']
-            score = item.select_one('.rating_num').text
-            votes = item.select_one('.star span:last-child').text.replace('人评价', '')
-            info = item.select_one('.bd p').text.strip().split('\\n')[0]
-            link = item.select_one('.hd a')['href']
-            quote = item.select_one('.inq').text if item.select_one('.inq') else ""
+            try:
+                # 过滤掉还没有评分的（通常是还未大范围公映的）可选
+                movie_data.append({
+                    "title": item.get('data-title', '未知'),
+                    "score": item.get('data-score', '0'),
+                    "duration": item.get('data-duration', ''),
+                    "region": item.get('data-region', ''),
+                    "actors": item.get('data-actors', ''),
+                    "link": f"https://movie.douban.com/subject/{item.get('id')}/"
+                })
+            except: continue
             
-            movie_data.append({
-                "title": title,
-                "img": img,
-                "score": score,
-                "votes": votes,
-                "info": info,
-                "link": link,
-                "quote": quote
-            })
-
+        # 根据评分降序排序，让榜单更有意义
+        movie_data.sort(key=lambda x: float(x['score']), reverse=True)
+        
         return jsonify({"success": True, "data": movie_data})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=True, host='0.0.0.0', port=port)
